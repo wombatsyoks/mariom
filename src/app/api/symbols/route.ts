@@ -1,0 +1,593 @@
+import { NextRequest, NextResponse } from 'next/server';
+import * as cheerio from 'cheerio';
+
+export async function POST(request: NextRequest) {
+  try {
+    const { symbol } = await request.json();
+    
+    if (!symbol || typeof symbol !== 'string') {
+      return NextResponse.json(
+        { success: false, error: 'Symbol is required' },
+        { status: 400 }
+      );
+    }
+
+    const ticker = symbol.trim().toUpperCase();
+    
+    // Fetch all the data for this symbol with proper error handling
+    const [
+      executiveData,
+      premarketLow,
+      previousClose,
+      isEtfEtn,
+      newsData,
+      secFiling
+    ] = await Promise.allSettled([
+      scrapeYahooProfileViaAppsScript(ticker),
+      getPremarketLow(ticker),
+      getPreviousClose(ticker),
+      checkEtnEtf(ticker),
+      scrapeZacksNews(ticker),
+      getSecFiling(ticker)
+    ]);
+
+    const symbolData = {
+      symbol: ticker,
+      executives: executiveData.status === 'fulfilled' ? executiveData.value : { country: 'Error', executives: [] },
+      premarketLow: premarketLow.status === 'fulfilled' ? premarketLow.value : null,
+      previousClose: previousClose.status === 'fulfilled' ? previousClose.value : 0,
+      isEtfEtn: isEtfEtn.status === 'fulfilled' ? isEtfEtn.value : 'NO',
+      news: newsData.status === 'fulfilled' ? newsData.value : [],
+      secFiling: secFiling.status === 'fulfilled' ? secFiling.value : 'No SEC filings found'
+    };
+
+    return NextResponse.json({
+      success: true,
+      data: symbolData
+    });
+
+  } catch (error) {
+    console.error('Error processing symbol:', error);
+    return NextResponse.json(
+      { success: false, error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// Helper function to create retry wrapper
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  functionName: string,
+  symbol: string,
+  maxRetries: number = 3,
+  timeoutMs: number = 10000
+): Promise<T> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`🔄 ${functionName} - Attempt ${attempt}/${maxRetries} for ${symbol}`);
+      
+      // Create AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      
+      const result = await Promise.race([
+        fn(),
+        new Promise<never>((_, reject) => {
+          controller.signal.addEventListener('abort', () => {
+            reject(new Error('Request timeout'));
+          });
+        })
+      ]);
+      
+      clearTimeout(timeoutId);
+      console.log(`✅ ${functionName} successful for ${symbol} on attempt ${attempt}`);
+      return result;
+
+    } catch (error) {
+      lastError = error as Error;
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      
+      if (errorMsg.includes('aborted') || errorMsg.includes('timeout') || errorMsg.includes('ETIMEDOUT')) {
+        console.log(`⏳ ${functionName} attempt ${attempt} timed out for ${symbol}`);
+      } else {
+        console.log(`❌ ${functionName} attempt ${attempt} failed for ${symbol}: ${errorMsg}`);
+      }
+      
+      if (attempt < maxRetries) {
+        const delay = attempt * 1000; // Progressive delay
+        console.log(`⏳ Waiting ${delay}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  console.log(`🔥 All ${functionName} attempts failed for ${symbol}: ${lastError?.message}`);
+  throw lastError || new Error(`${functionName} failed after ${maxRetries} attempts`);
+}
+
+// Google Apps Script endpoint for Yahoo Profile scraping
+const APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbyXZu3kdLu5b0FRAeYO5pNYfGdo1kuPgxYKglSTXEXtDtXfPmR-_Ozlee4uucRyEsWF/exec';
+
+async function scrapeYahooProfileViaAppsScript(ticker: string) {
+  return withRetry(async () => {
+    console.log(`🔍 Fetching Yahoo Profile for ${ticker} via Google Apps Script`);
+    
+    console.log(`🔗 Using Apps Script URL: ${APPS_SCRIPT_URL.substring(0, 50)}...`);
+    
+    // Add delay to avoid Yahoo rate limiting
+    await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
+    
+    const url = `${APPS_SCRIPT_URL}?symbol=${encodeURIComponent(ticker)}`;
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Apps Script HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const result = await response.json();
+    
+    if (!result.success) {
+      throw new Error(`Apps Script error: ${result.error}`);
+    }
+    
+    console.log(`✅ Successfully fetched profile for ${ticker} via Apps Script`);
+    console.log(`📊 Country: ${result.data.country}, Executives: ${result.data.executives.length}`);
+    
+    return {
+      country: result.data.country || "Unknown",
+      executives: result.data.executives || []
+    };
+    
+  }, 'Yahoo Profile via Apps Script', ticker, 3, 10000);
+}
+
+async function scrapeYahooProfileExecutives(ticker: string) {
+  return withRetry(async () => {
+    // Try multiple URLs as Yahoo might have changed their structure
+    const urls = [
+      `https://finance.yahoo.com/quote/${ticker}/profile/`,
+      `https://finance.yahoo.com/quote/${ticker}/`,
+      `https://finance.yahoo.com/quote/${ticker}/profile`
+    ];
+    
+    let html = '';
+    let successUrl = '';
+    
+    const headers = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Cache-Control": "no-cache",
+      "Pragma": "no-cache",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Upgrade-Insecure-Requests": "1"
+    };
+
+    console.log(`📡 Making request with headers:`, Object.keys(headers).join(', '));
+
+    let response;
+    try {
+      response = await fetch(urls[0], { 
+        headers,
+        method: 'GET',
+        redirect: 'follow'
+      });
+      console.log(`📊 Response status: ${response.status} ${response.statusText}`);
+      console.log(`📊 Response headers:`, Object.fromEntries(response.headers.entries()));
+    } catch (fetchError) {
+      console.log(`🚫 Fetch error for ${ticker}:`, fetchError);
+      throw fetchError;
+    }
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.log(`❌ HTTP Error ${response.status} for ${ticker}:`, errorText.substring(0, 500));
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    try {
+      html = await response.text();
+      console.log(`📄 HTML response length: ${html.length} characters`);
+      console.log(`📄 HTML preview:`, html.substring(0, 300) + '...');
+    } catch (htmlError) {
+      console.log(`🚫 Failed to read HTML for ${ticker}:`, htmlError);
+      throw htmlError;
+    }
+
+    const $ = cheerio.load(html);
+    const execs: Array<{name: string, title: string}> = [];
+
+    // Primary selector for the exact structure you provided
+    const primarySelector = "div.table-container.yf-mj92za table.yf-mj92za tbody tr.yf-mj92za";
+    console.log(`🔍 Looking for primary selector: ${primarySelector}`);
+    console.log(`🔍 Found ${$(primarySelector).length} elements with primary selector`);
+    
+    // Extract executives using the exact structure
+    $(primarySelector).each((i, el) => {
+      const nameCell = $(el).find("td.yf-mj92za").eq(0);
+      const titleCell = $(el).find("td.yf-mj92za").eq(1);
+      
+      const name = nameCell.text().trim();
+      const title = titleCell.text().trim();
+      
+      console.log(`📋 Row ${i}: name="${name}", title="${title}"`);
+      
+      // Skip header rows and ensure we have both name and title
+      if (name && title && name !== "Name" && title !== "Title") {
+        execs.push({ name, title });
+      }
+    });
+
+    console.log(`✅ Found ${execs.length} executives with primary selector`);
+
+    // Fallback selectors if primary doesn't work
+    if (execs.length === 0) {
+      console.log(`🔄 Primary selector failed, trying fallback selectors...`);
+      
+      const fallbackSelectors = [
+        "div.table-container tbody tr",
+        "table[data-test='executives-table'] tbody tr",
+        "div[data-test='qsp-profile'] table tbody tr",
+        ".executives-table tbody tr",
+        "table tbody tr",
+        "tr"  // Very broad fallback
+      ];
+
+      for (const selector of fallbackSelectors) {
+        console.log(`🔍 Trying fallback selector: ${selector}`);
+        const elements = $(selector);
+        console.log(`🔍 Found ${elements.length} elements with selector: ${selector}`);
+        
+        elements.each((i, el) => {
+          const cells = $(el).find("td");
+          if (cells.length >= 2) {
+            const name = cells.eq(0).text().trim();
+            const title = cells.eq(1).text().trim();
+            console.log(`📋 Fallback Row ${i}: name="${name}", title="${title}"`);
+            if (name && title && name !== "Name" && title !== "Title") {
+              execs.push({ name, title });
+            }
+          }
+        });
+        
+        if (execs.length > 0) {
+          console.log(`✅ Found ${execs.length} executives with fallback selector: ${selector}`);
+          break;
+        }
+      }
+    }
+
+    // Extract country from company info address - using exact structure you provided
+    let country = "";
+    
+    // Primary selector for address structure
+    const addressDivs = $("div.company-info.yf-wxp4ja div.address.yf-wxp4ja div");
+    if (addressDivs.length > 0) {
+      // Get the last div which typically contains the country
+      country = addressDivs.last().text().trim();
+    }
+
+    // Fallback selectors for country/address
+    if (!country) {
+      const addressFallbacks = [
+        "div.address.yf-wxp4ja > div:last-child",
+        "div.company-info div.address div:last-child",
+        ".company-address div:last-child",
+        "div[data-test='qsp-profile'] div.address div:last-child"
+      ];
+
+      for (const selector of addressFallbacks) {
+        const addressDiv = $(selector);
+        if (addressDiv.length) {
+          country = addressDiv.text().trim();
+          if (country) break;
+        }
+      }
+    }
+
+    return {
+      country: country || "Unknown",
+      executives: execs
+    };
+  }, 'Yahoo Profile', ticker, 3, 15000);
+}
+
+async function getPremarketLow(ticker: string) {
+  return withRetry(async () => {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1m&range=1d&includePrePost=true`;
+    console.log(`Fetching premarket data for ${ticker} from ${url}`);
+    
+    const response = await fetch(url);
+    const statusCode = response.status;
+    console.log(`HTTP Status for ${ticker}: ${statusCode}`);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.log(`Failed to fetch data for ${ticker}: ${errorText}`);
+      throw new Error(`HTTP ${statusCode}: ${response.statusText}`);
+    }
+
+    let data;
+    try {
+      const responseText = await response.text();
+      data = JSON.parse(responseText);
+      console.log(`Parsed data for ${ticker}:`, JSON.stringify(data, null, 2).substring(0, 500) + '...');
+    } catch (err) {
+      console.log(`Failed to parse JSON for ${ticker}:`, err);
+      throw new Error(`JSON parsing failed: ${err}`);
+    }
+
+    const result = data.chart.result?.[0];
+    if (!result) {
+      console.log(`No result data for ${ticker}:`, JSON.stringify(data.chart.result));
+      return null;
+    }
+
+    const timestamps = result.timestamp;
+    if (!timestamps || !Array.isArray(timestamps)) {
+      console.log(`No valid timestamps for ${ticker}:`, JSON.stringify(timestamps));
+      return null;
+    }
+
+    const quote = result.indicators.quote?.[0];
+    if (!quote || !Array.isArray(quote.low)) {
+      console.log(`No valid quote.low for ${ticker}:`, JSON.stringify(quote));
+      return null;
+    }
+
+    const lows = quote.low;
+    const preStart = result.meta.currentTradingPeriod?.pre?.start;
+    const preEnd = result.meta.currentTradingPeriod?.pre?.end;
+
+    // If no premarket period defined, we'll use all available data
+
+    if (preStart && preEnd) {
+      console.log(`Premarket period for ${ticker}: ${new Date(preStart * 1000).toISOString()} to ${new Date(preEnd * 1000).toISOString()}`);
+    } else {
+      console.log(`No premarket period defined for ${ticker}, using all available data`);
+    }
+    
+    console.log(`Total timestamps available: ${timestamps.length}`);
+    console.log(`First timestamp: ${new Date(timestamps[0] * 1000).toISOString()}`);
+    console.log(`Last timestamp: ${new Date(timestamps[timestamps.length - 1] * 1000).toISOString()}`);
+
+    let premarketLows: Array<{ts: number, price: number}> = [];
+    let allValidLows: Array<{ts: number, price: number}> = [];
+
+    for (let i = 0; i < timestamps.length; i++) {
+      const ts = timestamps[i];
+      const low = lows[i];
+      if (low != null && !isNaN(low) && low > 0) {
+        allValidLows.push({ ts, price: low });
+        // Only filter by premarket period if we have valid start/end times
+        if (preStart && preEnd && ts >= preStart && ts < preEnd) {
+          premarketLows.push({ ts, price: low });
+        }
+      }
+    }
+
+    console.log(`Valid low data points: ${allValidLows.length}`);
+    console.log(`Premarket low data points: ${premarketLows.length}`);
+
+    // Use premarket data if available, otherwise use all available lows
+    let finalLows = premarketLows.length > 0 ? premarketLows : allValidLows;
+
+    if (finalLows.length === 0) {
+      console.log(`No valid low data available for ${ticker}`);
+      // As last resort, try to get any price from the regular trading session
+      const regularStart = result.meta.currentTradingPeriod?.regular?.start;
+      const regularEnd = result.meta.currentTradingPeriod?.regular?.end;
+      
+      if (regularStart && regularEnd) {
+        for (let i = 0; i < timestamps.length; i++) {
+          const ts = timestamps[i];
+          const low = lows[i];
+          if (ts >= regularStart && ts < regularEnd && low != null && !isNaN(low) && low > 0) {
+            finalLows.push({ ts, price: low });
+          }
+        }
+      }
+      
+      if (finalLows.length === 0) {
+        return null;
+      }
+    }
+
+    console.log(`Found ${finalLows.length} data points for ${ticker} (${premarketLows.length > 0 ? 'premarket' : 'all available'})`);
+    const preLow = finalLows.reduce((min, d) => d.price < min.price ? d : min);
+    const formattedPrice = `${(Math.round(preLow.price * 100) / 100).toFixed(2)}`;
+    console.log(`Low price for ${ticker}: ${formattedPrice} at ${new Date(preLow.ts * 1000).toISOString()}`);
+    
+    return formattedPrice;
+  }, 'Premarket Low', ticker).catch((err) => {
+    console.log(`All premarket low attempts failed for ${ticker}:`, err);
+    return null;
+  });
+}
+
+async function getPreviousClose(ticker: string) {
+  return withRetry(async () => {
+    const yahooResponse = await fetch(`https://finance.yahoo.com/quote/${ticker}/`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+      }
+    });
+    
+    if (yahooResponse.ok) {
+      const html = await yahooResponse.text();
+      const $ = cheerio.load(html);
+      const previousClose = $('fin-streamer[data-field="regularMarketPreviousClose"]').attr('data-value');
+      
+      if (previousClose) {
+        const price = parseFloat(previousClose);
+        if (!isNaN(price)) {
+          return price;
+        }
+      }
+    }
+
+    return 0;
+  }, 'Previous Close', ticker).catch(() => 0);
+}
+
+async function checkEtnEtf(symbol: string) {
+  return withRetry(async () => {
+    const baseUrl = "https://stockanalysis.com/api/screener/e/f?m=s&s=asc&c=s,n,assetClass,aum&cn=500&i=etf&p=";
+    const headers = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    };
+    
+    // Check first few pages
+    for (let page = 1; page <= 3; page++) {
+      const url = baseUrl + page;
+      
+      const response = await fetch(url, { headers });
+      
+      if (!response.ok) continue;
+
+      const json = await response.json();
+      
+      if (json.data && json.data.data && Array.isArray(json.data.data)) {
+        const found = json.data.data.some((item: any) => 
+          item.s && item.s.toUpperCase() === symbol.toUpperCase()
+        );
+        
+        if (found) {
+          return "YES";
+        }
+      }
+    }
+    
+    return "NO";
+  }, 'ETF/ETN Check', symbol, 2, 8000).catch(() => "NO");
+}
+
+async function scrapeZacksNews(ticker: string = "CSCI") {
+  return withRetry(async () => {
+    const url = `https://www.zacks.com/data_handler/stocks/stock_quote_news.php?provider=others&cat=${ticker}&limit=30&record=1`;
+    
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const html = await response.text();
+    const $ = cheerio.load(html);
+    const articles: Array<{title: string, link: string, time: string}> = [];
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const cutoffDate = new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000);
+
+    $("article").each((i, el) => {
+      if (articles.length >= 15) return false;
+
+      const title = $(el).find("h1 a").text().trim();
+      const relativeLink = $(el).find("h1 a").attr("href");
+      const timeElement = $(el).find("time");
+      const datetimeStr = timeElement.attr("datetime");
+      const timeStr = timeElement.text().trim();
+
+      if (!datetimeStr || !relativeLink) return;
+
+      const parsedDate = new Date(datetimeStr);
+      parsedDate.setHours(0, 0, 0, 0);
+
+      if (parsedDate < cutoffDate) return;
+
+      const fullPageUrl = "https://www.zacks.com" + relativeLink;
+      articles.push({ 
+        title, 
+        link: fullPageUrl, 
+        time: timeStr.split("EST")[0] 
+      });
+    });
+
+    return articles;
+  }, 'Zacks News', ticker).catch(() => []);
+}
+
+async function getSecFiling(symbol: string) {
+  return withRetry(async () => {
+    const url = `https://www.stocktitan.net/sec-filings/${symbol.toUpperCase()}`;
+    
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+      }
+    });
+
+    if (response.status === 404) {
+      return `Page not found for ${symbol}`;
+    } else if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const html = await response.text();
+    const $ = cheerio.load(html);
+
+    // Find the first filing
+    const headers = $('.news-row-header');
+    let firstFiling: any = null;
+    
+    headers.each(function() {
+      const titleDiv = $(this).find('.title');
+      if (titleDiv.length > 0 && titleDiv.text().trim() === 'Filing') {
+        firstFiling = $(this);
+        return false; // Stop after finding the first one
+      }
+    });
+
+    if (!firstFiling) {
+      return `No SEC Filings for ${symbol} in 3 days`;
+    }
+
+    // Get the container (parent of the header)
+    const container = firstFiling.parent();
+
+    // Get the title and link
+    const titleElem = container.find('a').first();
+    const title = titleElem.text().trim();
+    let link = titleElem.attr('href');
+    
+    if (link && !link.startsWith('https://')) {
+      link = 'https://www.stocktitan.net' + link;
+    }
+    
+    if (!link) {
+      return `No link found for ${symbol}`;
+    }
+
+    // Get the datetime
+    const dateStr = firstFiling.find('time').attr('datetime');
+    if (!dateStr) {
+      return `No date found for ${symbol}`;
+    }
+    
+    const filingDate = new Date(dateStr);
+    const displayDate = firstFiling.find('span[data-role="date"]').text().trim();
+
+    // Date checks
+    const currentDate = new Date();
+    const threeDaysAgo = new Date(currentDate);
+    threeDaysAgo.setDate(currentDate.getDate() - 3);
+
+    if (filingDate < threeDaysAgo) {
+      return `No SEC Filings for ${symbol} in 3 days`;
+    }
+
+    return `${title} (${displayDate}) - ${link}`;
+  }, 'SEC Filing', symbol).catch((error) => `No SEC filings found - ${error.message || 'Unknown error'}`);
+}
