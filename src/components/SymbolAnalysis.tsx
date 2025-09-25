@@ -26,6 +26,7 @@ import {
   IconArrowLeft
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
+import RealTimeQuotes from './RealTimeQuotes';
 
 interface SymbolData {
   symbol: string;
@@ -148,6 +149,9 @@ export function SymbolAnalysis({ symbol, onBackToHome }: SymbolAnalysisProps) {
           Refresh
         </Button>
       </Group>
+
+      {/* Real-Time Quote Section */}
+      <RealTimeQuotes symbol={data.symbol} />
 
       {/* Main Summary Table - Google Sheets Style */}
       <Paper shadow="sm" p={0} radius="md" withBorder>
