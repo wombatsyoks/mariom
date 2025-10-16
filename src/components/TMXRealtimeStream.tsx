@@ -76,7 +76,7 @@ export default function TMXRealtimeStream({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const intervalRef = useRef<number | null>(null);
 
   // Auto-start streaming if enabled
   useEffect(() => {
@@ -87,7 +87,7 @@ export default function TMXRealtimeStream({
     // Cleanup on unmount
     return () => {
       if (intervalRef.current) {
-        clearInterval(intervalRef.current);
+        window.clearInterval(intervalRef.current);
       }
     };
   }, [autoStart, symbols]);
@@ -162,7 +162,9 @@ export default function TMXRealtimeStream({
     await fetchStreamData();
     
     // Set up interval for continuous updates
-    intervalRef.current = setInterval(fetchStreamData, interval);
+    intervalRef.current = window.setInterval(() => {
+      fetchStreamData();
+    }, interval);
     
     setLoading(false);
   };
@@ -174,7 +176,7 @@ export default function TMXRealtimeStream({
     setLoading(false);
     
     if (intervalRef.current) {
-      clearInterval(intervalRef.current);
+      window.clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
 
