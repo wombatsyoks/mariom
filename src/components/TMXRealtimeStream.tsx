@@ -76,6 +76,12 @@ export default function TMXRealtimeStream({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
+  // API Parameters
+  const [marketSession, setMarketSession] = useState<'PRE' | 'REGULAR' | 'POST'>('PRE');
+  const [stat, setStat] = useState<'pg' | 'pl' | 'vg' | 'vl' | 'dg' | 'dl'>('pg');
+  const [statTop, setStatTop] = useState('100');
+  const [statCountry, setStatCountry] = useState<'US' | 'CA'>('US');
+  
   const intervalRef = useRef<number | null>(null);
 
   // Auto-start streaming if enabled
@@ -99,8 +105,21 @@ export default function TMXRealtimeStream({
       const params = new URLSearchParams({
         symbols: symbols.join(','),
         streamType,
+        marketSession: marketSession,
+        stat: stat,
+        statTop: statTop,
+        statCountry: statCountry,
+        timezone: 'true',
+        webmasterId: '101020',
+        pathName: '/marketmovers/',
+        qmodTool: 'MarketMovers',
         ...(sessionId && { sessionId })
       });
+
+      // Add premarket=true for PRE market sessions
+      if (marketSession === 'PRE') {
+        params.set('premarket', 'true');
+      }
 
       const response = await fetch(`/api/tmx-realtime-stream?${params}`);
       const result = await response.json();
@@ -315,6 +334,60 @@ export default function TMXRealtimeStream({
               <IconPlus size={16} />
             </ActionIcon>
           </Group>
+        </Group>
+
+        {/* API Parameters Configuration */}
+        <Group mb="md">
+          <Select
+            label="Market Session"
+            value={marketSession}
+            onChange={(value) => setMarketSession(value as typeof marketSession)}
+            data={[
+              { value: 'PRE', label: 'Pre-Market' },
+              { value: 'REGULAR', label: 'Regular Hours' },
+              { value: 'POST', label: 'After Hours' }
+            ]}
+            disabled={isStreaming}
+          />
+          
+          <Select
+            label="Market Stats"
+            value={stat}
+            onChange={(value) => setStat(value as typeof stat)}
+            data={[
+              { value: 'pg', label: 'Percent Gainers' },
+              { value: 'pl', label: 'Percent Losers' },
+              { value: 'vg', label: 'Volume Gainers' },
+              { value: 'vl', label: 'Volume Losers' },
+              { value: 'dg', label: 'Dollar Gainers' },
+              { value: 'dl', label: 'Dollar Losers' }
+            ]}
+            disabled={isStreaming}
+          />
+          
+          <Select
+            label="Country"
+            value={statCountry}
+            onChange={(value) => setStatCountry(value as typeof statCountry)}
+            data={[
+              { value: 'US', label: 'United States' },
+              { value: 'CA', label: 'Canada' }
+            ]}
+            disabled={isStreaming}
+          />
+          
+          <Select
+            label="Top N Results"
+            value={statTop}
+            onChange={(value) => setStatTop(value || '100')}
+            data={[
+              { value: '25', label: 'Top 25' },
+              { value: '50', label: 'Top 50' },
+              { value: '100', label: 'Top 100' },
+              { value: '200', label: 'Top 200' }
+            ]}
+            disabled={isStreaming}
+          />
         </Group>
 
         {/* Symbol Management */}
