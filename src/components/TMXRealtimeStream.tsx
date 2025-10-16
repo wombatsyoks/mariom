@@ -50,6 +50,11 @@ interface TMXStreamData {
   exchange: string;
   marketCap?: number;
   pe?: number;
+  shortName?: string;
+  datatype?: string;
+  symbolString?: string;
+  lastTradeTime?: string;
+  entitlement?: string;
 }
 
 interface TMXRealtimeStreamProps {
@@ -443,10 +448,12 @@ export default function TMXRealtimeStream({
         <Card withBorder>
           <Text size="lg" fw={600} mb="md">Live Market Data</Text>
           
-          <Table striped highlightOnHover>
+          <Box style={{ overflowX: 'auto' }}>
+            <Table striped highlightOnHover style={{ minWidth: '1200px' }}>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Symbol</Table.Th>
+                <Table.Th>Short Name</Table.Th>
                 <Table.Th>Price</Table.Th>
                 <Table.Th>Change</Table.Th>
                 <Table.Th>Volume</Table.Th>
@@ -454,6 +461,9 @@ export default function TMXRealtimeStream({
                 <Table.Th>High/Low</Table.Th>
                 <Table.Th>Market Cap</Table.Th>
                 <Table.Th>P/E</Table.Th>
+                <Table.Th>Data Type</Table.Th>
+                <Table.Th>Last Trade</Table.Th>
+                <Table.Th>Entitlement</Table.Th>
                 <Table.Th>Exchange</Table.Th>
               </Table.Tr>
             </Table.Thead>
@@ -462,6 +472,14 @@ export default function TMXRealtimeStream({
                 <Table.Tr key={stock.symbol}>
                   <Table.Td>
                     <Text fw={600}>{stock.symbol}</Text>
+                    {stock.symbolString && stock.symbolString !== stock.symbol && (
+                      <Text size="xs" c="dimmed">({stock.symbolString})</Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm" style={{ maxWidth: '150px' }} lineClamp={2}>
+                      {stock.shortName || 'N/A'}
+                    </Text>
                   </Table.Td>
                   <Table.Td>
                     <Text size="lg" fw={500}>
@@ -505,6 +523,30 @@ export default function TMXRealtimeStream({
                     )}
                   </Table.Td>
                   <Table.Td>
+                    <Badge size="xs" variant="outline" color={
+                      stock.datatype === 'equity' ? 'blue' : 
+                      stock.datatype === 'etf' ? 'green' : 'gray'
+                    }>
+                      {stock.datatype || 'N/A'}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="xs" c="dimmed">
+                      {stock.lastTradeTime ? 
+                        new Date(stock.lastTradeTime).toLocaleString() : 
+                        'N/A'
+                      }
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Badge size="xs" variant="light" color={
+                      stock.entitlement === 'DL' ? 'orange' : 
+                      stock.entitlement === 'RT' ? 'green' : 'gray'
+                    }>
+                      {stock.entitlement || 'N/A'}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td>
                     <Badge size="sm" variant="light">
                       {stock.exchange}
                     </Badge>
@@ -513,6 +555,7 @@ export default function TMXRealtimeStream({
               ))}
             </Table.Tbody>
           </Table>
+          </Box>
         </Card>
       )}
 
