@@ -1,7 +1,7 @@
 'use client';
-import { useEffect, useState } from 'react';
-import { Stack, Card, Text, Badge, Group, Title, Paper, ActionIcon, Tooltip, Grid } from '@mantine/core';
-import { IconRefresh, IconTrendingUp, IconTrendingDown, IconClock } from '@tabler/icons-react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { Stack, Text, Badge, Group, Title, Paper, ActionIcon, Tooltip, Table, ScrollArea, Select, Grid } from '@mantine/core';
+import { IconRefresh, IconTrendingUp, IconTrendingDown, IconClock, IconFilter } from '@tabler/icons-react';
 
 interface Quote {
   symbol: string;
@@ -26,11 +26,18 @@ interface Quote {
   exchange: string;
   lastUpdate: string;
   
-  // Extended QuoteMedia fields
+  // Extended QuoteMedia pricedata fields
   bid: number;
   ask: number;
   bidSize: number;
   askSize: number;
+  rawBidSize: number;
+  rawAskSize: number;
+  tradevolume: number;
+  sharevolume: number;
+  vwap: number;
+  vwapvolume: number;
+  tick: number;
   lastSize: number;
   averageVolume: number;
   marketStatus: string;
@@ -61,78 +68,284 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState(30);
+  const [countdown, setCountdown] = useState(10);
+  const [isVisible, setIsVisible] = useState(true);
+  const [isPaused, setIsPaused] = useState(false);
 
-  const fetchQuotes = async () => {
+  // Filter states
+  const [marketSession, setMarketSession] = useState('NORMAL');
+  const [statType, setStatType] = useState('dv');
+  const [exchange, setExchange] = useState('US');
+  const [statTop, setStatTop] = useState('100');
+  const [marketCategory, setMarketCategory] = useState('Market Movers');
+
+  // Refs for intervals and lifecycle to ensure proper cleanup and to avoid
+  // including volatile state in callback dependency arrays which can cause
+  // frequent re-creations and effect churn (leading to memory/CPU spikes).
+  const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef(true);
+  const isFetchingRef = useRef(false); // Guard against concurrent fetches
+  const loadingRef = useRef(loading);
+  const debounceTimeoutRef = useRef<number | null>(null);
+
+  // Filter options based on QuoteMedia interface
+  const marketSessionOptions = [
+    { value: 'NORMAL', label: 'Normal Hours' },
+    { value: 'PRE', label: 'Pre-Market' },
+    { value: 'POST', label: 'Post-Market' }
+  ];
+
+  const statTypeOptions = [
+    { value: 'va', label: 'Dollar Value (va)' },
+    { value: 'dv', label: 'Dollar Volume (dv)' },
+    { value: 'dg', label: 'Dollar Gainers (dg)' },
+    { value: 'dl', label: 'Dollar Losers (dl)' },
+    { value: 'pg', label: 'Percent Gainers (pg)' },
+    { value: 'pl', label: 'Percent Losers (pl)' },
+    { value: 'ah', label: 'After Hours Gainers (ah)' },
+    { value: 'al', label: 'After Hours Losers (al)' }
+  ];
+
+  const exchangeOptions = [
+    { value: 'US', label: 'US Markets' },
+    { value: 'NSD', label: 'NASDAQ' },
+    { value: 'NYE', label: 'NYSE' },
+    { value: 'AMX', label: 'AMEX' },
+    { value: 'OTO', label: 'OTC' },
+    { value: 'TSX', label: 'TSX' },
+    { value: 'TSXV', label: 'TSX Venture' },
+    { value: 'CNQ', label: 'Canadian NSX' },
+    { value: 'LSE', label: 'London Stock Exchange' }
+  ];
+
+  const statTopOptions = [
+    { value: '25', label: 'Top 25' },
+    { value: '50', label: 'Top 50' },
+    { value: '100', label: 'Top 100' },
+    { value: '250', label: 'Top 250' },
+    { value: '500', label: 'Top 500' }
+  ];
+
+  const marketCategoryOptions = [
+    { value: 'Market Overview', label: 'Market Overview' },
+    { value: 'Market Indices', label: 'Market Indices' },
+    { value: 'Market Movers', label: 'Market Movers' },
+    { value: 'Market Performers', label: 'Market Performers' },
+    { value: 'Market Heatmaps', label: 'Market Heatmaps' },
+    { value: 'Market Forex', label: 'Market Forex' },
+    { value: 'Market Rates', label: 'Market Rates' },
+    { value: 'Market Calendars', label: 'Market Calendars' },
+    { value: 'Market Options', label: 'Market Options' },
+    { value: 'Market Industries', label: 'Market Industries' },
+    { value: 'Market Constituents', label: 'Market Constituents' },
+    { value: 'Market Filings', label: 'Market Filings' }
+  ];
+
+  // Memory management: limit the number of quotes stored
+  const MAX_QUOTES = 100; // Limit to prevent memory accumulation (UI cap)
+
+  const fetchQuotes = useCallback(async () => {
+    // Guard: don't fetch if hidden/paused or if a fetch is already in-flight
+    if (!isVisible || isPaused || isFetchingRef.current) return;
+
+    // Mark fetching
+    isFetchingRef.current = true;
+    loadingRef.current = true;
     setLoading(true);
     setError(null);
+
+    // Abort previous request if still pending
+    if (abortControllerRef.current) {
+      try { abortControllerRef.current.abort(); } catch {}
+    }
+
+    // Create new abort controller for this request
+    abortControllerRef.current = new AbortController();
+
     try {
-      // Add timeout and abort controller for better error handling
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
-      
-      const response = await fetch(`/api/quotes?symbols=${symbol}`, {
-        signal: controller.signal
+      const url = `/api/tmx-quotemedia-proxy?marketSession=${marketSession}&stat=${statType}&statTop=${statTop}&exchange=${exchange}&category=${encodeURIComponent(marketCategory)}`;
+      const response = await fetch(url, {
+        signal: abortControllerRef.current.signal,
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
       });
-      
-      clearTimeout(timeoutId);
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       const data = await response.json();
-      
+
       if (data.success && Array.isArray(data.quotes)) {
-        setQuotes(data.quotes);
-        setLastUpdate(new Date().toISOString());
+        // Memory optimization: limit and clean data based on statTop filter
+        const maxQuotes = Math.min(Number(statTop) || MAX_QUOTES, 500); // Cap at 500 for safety
+        // Only keep essential fields to reduce memory footprint
+        const cleanedQuotes = data.quotes.slice(0, maxQuotes).map((quote: any) => ({
+          symbol: quote.symbol || 'N/A',
+          companyName: quote.companyName || 'N/A',
+          price: Number(quote.price) || 0,
+          change: Number(quote.change) || 0,
+          changePercent: Number(quote.changePercent) || 0,
+          open: Number(quote.open) || 0,
+          high: Number(quote.high) || 0,
+          low: Number(quote.low) || 0,
+          previousClose: Number(quote.previousClose) || 0,
+          bid: Number(quote.bid) || 0,
+          ask: Number(quote.ask) || 0,
+          bidSize: Number(quote.bidSize) || 0,
+          askSize: Number(quote.askSize) || 0,
+          rawBidSize: Number(quote.rawBidSize) || 0,
+          rawAskSize: Number(quote.rawAskSize) || 0,
+          tradevolume: Number(quote.tradevolume) || 0,
+          sharevolume: Number(quote.sharevolume) || Number(quote.volume) || 0,
+          volume: Number(quote.sharevolume) || Number(quote.volume) || 0,
+          vwap: Number(quote.vwap) || 0,
+          vwapvolume: Number(quote.vwapvolume) || 0,
+          tick: Number(quote.tick) || 0,
+          exchange: quote.exchange || 'US',
+          lastTradeTime: quote.lastTradeTime || new Date().toISOString()
+        }));
+        // Replace state in one update - keep array reference small
+        if (isMountedRef.current) {
+          setQuotes(cleanedQuotes);
+          setLastUpdate(new Date().toISOString());
+        }
       } else {
         throw new Error(data.error || 'Failed to fetch quotes');
       }
     } catch (error) {
-      console.error('Error fetching quotes:', error);
-      if (error instanceof Error) {
-        // Handle different types of errors
-        if (error.name === 'AbortError') {
-          setError('Request timed out - please try again');
-        } else if (error.message.includes('Failed to fetch')) {
+      // Only set error if the request wasn't aborted
+      if (error instanceof Error && error.name !== 'AbortError') {
+        console.error('Error fetching quotes:', error);
+        if (error.message.includes('Failed to fetch')) {
           setError('Network error - please check your connection and try again');
         } else if (error.message.includes('authenticate')) {
           setError('Authentication failed - please refresh the page');
         } else {
           setError(`Data error: ${error.message}`);
         }
-      } else {
-        setError('An unexpected error occurred while fetching quotes');
       }
     } finally {
-      setLoading(false);
+      isFetchingRef.current = false;
+      loadingRef.current = false;
+      if (isMountedRef.current) setLoading(false);
+      abortControllerRef.current = null;
     }
-  };
+  // NOTE: loading intentionally omitted from deps to avoid re-creating callback on each setLoading
+  }, [isVisible, isPaused, marketSession, statType, statTop, exchange, marketCategory]);
 
-  // Auto-refresh effect
+  // Visibility API to pause updates when tab is not visible
   useEffect(() => {
-    // Initial fetch
-    fetchQuotes();
-    
-    const refreshInterval = setInterval(() => {
-      fetchQuotes();
-      setCountdown(30); // Reset countdown
-    }, 30000); // Refresh every 30 seconds
+    const handleVisibilityChange = () => {
+      setIsVisible(!document.hidden);
+    };
 
-    return () => clearInterval(refreshInterval);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
-  // Countdown effect
+  // Auto-refresh effect with memory management. Use a slightly longer interval
+  // and ensure only one interval exists. fetchQuotes is stable (no loading in deps).
   useEffect(() => {
-    const countdownInterval = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          return 30; // Reset to 30 when it reaches 0
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    // Clear any existing interval
+    if (refreshIntervalRef.current) {
+      clearInterval(refreshIntervalRef.current);
+      refreshIntervalRef.current = null;
+    }
 
-    return () => clearInterval(countdownInterval);
+    // Initial fetch
+    fetchQuotes();
+
+    const REFRESH_MS = 15000; // 15s - reduce frequency to ease memory/CPU
+    if (isVisible && !isPaused) {
+      refreshIntervalRef.current = setInterval(() => {
+        fetchQuotes();
+        setCountdown(Math.floor(REFRESH_MS / 1000));
+      }, REFRESH_MS);
+    }
+
+    return () => {
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+        refreshIntervalRef.current = null;
+      }
+    };
+  }, [fetchQuotes, isVisible, isPaused]);
+
+  // Countdown effect with cleanup (driven by REFRESH_MS used above)
+  useEffect(() => {
+    // Clean up previous countdown
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+
+    // Only run countdown if visible and not paused
+    if (isVisible && !isPaused) {
+      // Start countdown at 15 (matching REFRESH_MS)
+      setCountdown(15);
+      countdownIntervalRef.current = setInterval(() => {
+        setCountdown((prev) => (prev <= 1 ? 15 : prev - 1));
+      }, 1000);
+    }
+
+    return () => {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+      }
+    };
+  }, [isVisible, isPaused]);
+
+  // Debounced refetch when filters change to avoid rapid-fire requests and
+  // excessive re-renders when user is interacting with the filter controls.
+  useEffect(() => {
+    if (debounceTimeoutRef.current) {
+      window.clearTimeout(debounceTimeoutRef.current as number);
+      debounceTimeoutRef.current = null;
+    }
+    // Debounce 600ms
+    debounceTimeoutRef.current = window.setTimeout(() => {
+      if (!isPaused && isVisible) fetchQuotes();
+    }, 600);
+
+    return () => {
+      if (debounceTimeoutRef.current) {
+        window.clearTimeout(debounceTimeoutRef.current as number);
+        debounceTimeoutRef.current = null;
+      }
+    };
+  }, [marketSession, statType, exchange, statTop, marketCategory, isVisible, isPaused, fetchQuotes]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      // Mark unmounted to avoid state updates from inflight requests
+      isMountedRef.current = false;
+      // Abort any pending requests
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      
+      // Clear all intervals
+      if (refreshIntervalRef.current) {
+        clearInterval(refreshIntervalRef.current);
+      }
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+      
+      // Clear state to free memory
+      setQuotes([]);
+      setError(null);
+      setLastUpdate(null);
+    };
   }, []);
 
   const formatPrice = (price: number) => {
@@ -247,7 +460,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
 
   return (
     <Stack gap="lg">
-      {/* Enhanced Header with Full Width */}
+      {/* Enhanced Header */}
       <Paper p="xl" withBorder style={{ 
         background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
         color: 'white',
@@ -258,23 +471,34 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
             <IconTrendingUp size={32} />
             <div>
               <Title order={2} style={{ margin: 0, color: 'white' }}>
-                Nasdaq Data from QuoteMedia
+                Real-Time Market Data
               </Title>
               <Text size="md" style={{ opacity: 0.9, margin: 0, marginTop: '4px' }}>
-                Real-time market data • Updates every 30 seconds
+                {isPaused ? 'Updates paused - click ▶️ to resume' : `Live quotes • Updates every ${countdown}s • Memory: ${quotes.length}/${statTop} quotes`}
               </Text>
             </div>
           </Group>
           
           <Group gap="md">
+            <Tooltip label={isPaused ? 'Resume updates' : 'Pause updates'}>
+              <ActionIcon
+                variant="filled"
+                size="lg"
+                color={isPaused ? 'green' : 'orange'}
+                onClick={() => setIsPaused(!isPaused)}
+                style={{ borderRadius: '10px' }}
+              >
+                {isPaused ? '▶️' : '⏸️'}
+              </ActionIcon>
+            </Tooltip>
             <Tooltip label={`Next refresh in ${countdown}s`}>
               <Group gap="xs" style={{ 
-                backgroundColor: 'rgba(255,255,255,0.2)', 
+                backgroundColor: isPaused ? 'rgba(255,165,0,0.2)' : 'rgba(255,255,255,0.2)', 
                 padding: '12px 16px', 
                 borderRadius: '10px' 
               }}>
                 <IconClock size={18} />
-                <Text size="md" fw={600}>{countdown}s</Text>
+                <Text size="md" fw={600}>{isPaused ? 'PAUSED' : `${countdown}s`}</Text>
               </Group>
             </Tooltip>
             <ActionIcon
@@ -284,6 +508,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
               onClick={fetchQuotes}
               loading={loading}
               style={{ borderRadius: '10px' }}
+              disabled={isPaused}
             >
               <IconRefresh size={20} />
             </ActionIcon>
@@ -292,277 +517,220 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
 
         {lastUpdate && (
           <Text size="sm" style={{ opacity: 0.8, marginTop: '12px' }}>
-            Last updated: {new Date(lastUpdate).toLocaleString()}
+            Last updated: {new Date(lastUpdate).toLocaleString()} • Showing {quotes.length} symbols 
+            {isPaused && ' • UPDATES PAUSED'}
+            {!isVisible && ' • TAB INACTIVE'}
           </Text>
         )}
       </Paper>
 
-      {/* Main Quote Cards - Full Width Layout */}
-      {quotes.map((quote, index) => (
-        <Paper key={`${quote.symbol}-${index}`} p="xl" withBorder radius="lg" style={{ 
-          background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
-          border: '2px solid #e1e5e9',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
-        }}>
-          {/* Company Header Section */}
-          <Group justify="space-between" align="flex-start" mb="xl">
-            <div>
-              <Group gap="lg" align="baseline">
-                <Title order={1} c="dark" style={{ margin: 0, fontSize: '2.2rem' }}>
-                  {quote.symbol}
-                </Title>
-                <Badge size="xl" variant="gradient" gradient={{ from: 'blue', to: 'cyan' }} radius="md">
-                  {quote.exchange}
-                </Badge>
-              </Group>
-              <Text size="xl" fw={500} c="dimmed" mt="sm">
-                {quote.companyName}
-              </Text>
-            </div>
-            
-            {/* Price Display Section */}
-            <div style={{ textAlign: 'right' }}>
-              <Title order={1} c="dark" style={{ margin: 0, fontSize: '3rem', fontWeight: 700 }}>
-                {formatPrice(quote.price)}
-              </Title>
-              <Group gap="md" justify="flex-end" mt="sm">
-                <Group gap="xs">
-                  {quote.change >= 0 ? 
-                    <IconTrendingUp size={24} color="green" /> : 
-                    <IconTrendingDown size={24} color="red" />
-                  }
-                  <Text size="xl" fw={700} c={quote.change >= 0 ? 'green' : 'red'}>
-                    {formatChange(quote.change)} ({formatPercent(quote.changePercent)})
-                  </Text>
-                </Group>
-              </Group>
-            </div>
-          </Group>
+      {/* Filter Controls */}
+      <Paper p="md" withBorder radius="md">
+        <Grid>
+          <Grid.Col span={12}>
+            <Group gap="md" align="center">
+              <IconFilter size={20} />
+              <Text fw={500} size="sm">Filters:</Text>
+            </Group>
+          </Grid.Col>
+          <Grid.Col span={12}>
+            <Group gap="md" align="flex-end" wrap="wrap">
+              <Select
+                label="Market Category"
+                placeholder="Select category"
+                value={marketCategory}
+                onChange={(value) => setMarketCategory(value || 'Market Movers')}
+                data={marketCategoryOptions}
+                size="sm"
+                style={{ minWidth: 160 }}
+              />
+              
+              <Select
+                label="Market Session"
+                placeholder="Select session"
+                value={marketSession}
+                onChange={(value) => setMarketSession(value || 'NORMAL')}
+                data={marketSessionOptions}
+                size="sm"
+                style={{ minWidth: 150 }}
+              />
+              
+              <Select
+                label="Data Type"
+                placeholder="Select data type"
+                value={statType}
+                onChange={(value) => setStatType(value || 'dv')}
+                data={statTypeOptions}
+                size="sm"
+                style={{ minWidth: 180 }}
+              />
+              
+              <Select
+                label="Exchange"
+                placeholder="Select exchange"
+                value={exchange}
+                onChange={(value) => setExchange(value || 'US')}
+                data={exchangeOptions}
+                size="sm"
+                style={{ minWidth: 160 }}
+              />
+              
+              <Select
+                label="Number of Results"
+                placeholder="Select count"
+                value={statTop}
+                onChange={(value) => setStatTop(value || '100')}
+                data={statTopOptions}
+                size="sm"
+                style={{ minWidth: 140 }}
+              />
+            </Group>
+          </Grid.Col>
+        </Grid>
+      </Paper>
 
-          {/* Comprehensive Data Grid */}
-          <Grid gutter="xl">
-            {/* Current Price & Market Status */}
-            <Grid.Col span={4}>
-              <Card p="lg" withBorder radius="md" style={{ backgroundColor: 'white', height: '100%', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
-                <Stack gap="md">
-                  <Group justify="space-between">
-                    <Text size="sm" tt="uppercase" fw={700} c="blue">Market Status</Text>
-                    <Badge color={getMarketStatusColor(quote.marketStatus)} variant="filled" size="lg">
-                      {getMarketStatusIcon(quote.marketStatus)} {quote.marketStatus || 'Unknown'}
+      {/* Real-Time Data Table */}
+      <Paper withBorder radius="md" style={{ overflow: 'hidden' }}>
+        <ScrollArea>
+          <Table striped highlightOnHover withTableBorder withColumnBorders>
+            <Table.Thead style={{ backgroundColor: '#f8f9fa' }}>
+              <Table.Tr>
+                <Table.Th style={{ fontWeight: 700, color: '#495057' }}>Symbol</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057' }}>Company</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Price</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Change</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Change %</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Open</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>High</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Low</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Prev Close</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Bid</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Ask</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Bid Size</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Ask Size</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Trade Vol</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Share Vol</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>VWAP</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>VWAP Vol</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Tick</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057' }}>Exchange</Table.Th>
+                <Table.Th style={{ fontWeight: 700, color: '#495057', textAlign: 'right' }}>Last Update</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {quotes.map((quote, index) => (
+                <Table.Tr 
+                  key={`${quote.symbol}-${index}`} 
+                  style={{
+                    backgroundColor: index % 2 === 0 ? '#ffffff' : '#f8f9fa',
+                    transition: 'all 0.3s ease'
+                  }}
+                >
+                  <Table.Td style={{ fontWeight: 700, fontSize: '14px' }}>
+                    <Group gap="xs">
+                      <Text fw={700} c="dark">{quote.symbol}</Text>
+                      {quote.change >= 0 ? 
+                        <IconTrendingUp size={16} color="green" /> : 
+                        <IconTrendingDown size={16} color="red" />
+                      }
+                    </Group>
+                  </Table.Td>
+                  <Table.Td style={{ maxWidth: '150px' }}>
+                    <Text size="sm" truncate title={quote.companyName}>
+                      {quote.companyName || 'N/A'}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right', fontWeight: 600, fontSize: '14px' }}>
+                    {formatPrice(quote.price)}
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right', fontWeight: 600 }}>
+                    <Text c={quote.change >= 0 ? 'green' : 'red'} fw={600} size="sm">
+                      {formatChange(quote.change)}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right', fontWeight: 600 }}>
+                    <Text c={quote.changePercent >= 0 ? 'green' : 'red'} fw={600} size="sm">
+                      {formatPercent(quote.changePercent)}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm">{formatPrice(quote.open)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm" c="green">{formatPrice(quote.high)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm" c="red">{formatPrice(quote.low)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm">{formatPrice(quote.previousClose)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm" c="blue">{formatPrice(quote.bid)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm" c="red">{formatPrice(quote.ask)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm" c="dimmed">{formatVolume(quote.bidSize || 0)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm" c="dimmed">{formatVolume(quote.askSize || 0)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm" fw={500}>{formatVolume(quote.tradevolume || 0)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm" fw={500}>{formatVolume(quote.sharevolume || quote.volume || 0)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm">{quote.vwap ? formatPrice(quote.vwap) : 'N/A'}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="sm">{formatVolume(quote.vwapvolume || 0)}</Text>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Badge 
+                      variant="light" 
+                      color={quote.tick > 0 ? 'green' : quote.tick < 0 ? 'red' : 'gray'} 
+                      size="sm"
+                    >
+                      {quote.tick > 0 ? '+' : quote.tick < 0 ? '-' : '0'}
                     </Badge>
-                  </Group>
-                  <Stack gap="sm">
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Bid:</Text>
-                      <Text size="lg" fw={600} c="blue">{formatPrice(quote.bid)} × {formatVolume(quote.bidSize)}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Ask:</Text>
-                      <Text size="lg" fw={600} c="red">{formatPrice(quote.ask)} × {formatVolume(quote.askSize)}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Last Size:</Text>
-                      <Text size="lg" fw={600}>{formatVolume(quote.lastSize)}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Last Trade:</Text>
-                      <Text size="sm" fw={500}>{formatTime(quote.lastTradeTime)}</Text>
-                    </Group>
-                  </Stack>
-                </Stack>
-              </Card>
-            </Grid.Col>
+                  </Table.Td>
+                  <Table.Td>
+                    <Badge variant="filled" size="sm" color="blue">
+                      {quote.exchange}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td style={{ textAlign: 'right' }}>
+                    <Text size="xs" c="dimmed">
+                      {formatTime(quote.lastTradeTime)}
+                    </Text>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </ScrollArea>
+      </Paper>
 
-            {/* Daily Trading Range */}
-            <Grid.Col span={4}>
-              <Card p="lg" withBorder radius="md" style={{ backgroundColor: 'white', height: '100%', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
-                <Stack gap="md">
-                  <Text size="sm" tt="uppercase" fw={700} c="teal">Daily Trading Range</Text>
-                  <Stack gap="sm">
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Low:</Text>
-                      <Text size="lg" fw={600} c="red">{formatPrice(quote.low)}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">High:</Text>
-                      <Text size="lg" fw={600} c="green">{formatPrice(quote.high)}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Open:</Text>
-                      <Text size="lg" fw={600}>{formatPrice(quote.open)}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Prev Close:</Text>
-                      <Text size="lg" fw={600}>{formatPrice(quote.previousClose)}</Text>
-                    </Group>
-                  </Stack>
-                </Stack>
-              </Card>
-            </Grid.Col>
-
-            {/* Extended Hours Trading */}
-            <Grid.Col span={4}>
-              <Card p="lg" withBorder radius="md" style={{ backgroundColor: 'white', height: '100%', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
-                <Stack gap="md">
-                  <Text size="sm" tt="uppercase" fw={700} c="purple">Extended Hours</Text>
-                  <Stack gap="sm">
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Premarket:</Text>
-                      <div style={{ textAlign: 'right' }}>
-                        <Text size="lg" fw={600}>{formatPrice(quote.premarketPrice)}</Text>
-                        <Text size="xs" c={quote.premarketChange >= 0 ? 'green' : 'red'}>
-                          {formatChange(quote.premarketChange)} ({formatPercent(quote.premarketChangePercent)})
-                        </Text>
-                      </div>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">After Hours:</Text>
-                      <div style={{ textAlign: 'right' }}>
-                        <Text size="lg" fw={600}>{formatPrice(quote.afterHoursPrice)}</Text>
-                        <Text size="xs" c={quote.afterHoursChange >= 0 ? 'green' : 'red'}>
-                          {formatChange(quote.afterHoursChange)} ({formatPercent(quote.afterHoursChangePercent)})
-                        </Text>
-                      </div>
-                    </Group>
-                  </Stack>
-                </Stack>
-              </Card>
-            </Grid.Col>
-
-            {/* Volume & Trading Activity */}
-            <Grid.Col span={4}>
-              <Card p="lg" withBorder radius="md" style={{ backgroundColor: 'white', height: '100%', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
-                <Stack gap="md">
-                  <Text size="sm" tt="uppercase" fw={700} c="orange">Volume & Trading</Text>
-                  <Stack gap="sm">
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Volume:</Text>
-                      <Text size="lg" fw={600} c="orange">{formatVolume(quote.volume)}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Avg Volume:</Text>
-                      <Text size="lg" fw={600}>{formatVolume(quote.averageVolume)}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Dollar Vol:</Text>
-                      <Text size="lg" fw={600} c="green">{formatDollarVolume(quote.dollarVolume)}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Market Cap:</Text>
-                      <Text size="lg" fw={600}>{quote.marketCap || 'N/A'}</Text>
-                    </Group>
-                  </Stack>
-                </Stack>
-              </Card>
-            </Grid.Col>
-
-            {/* Financial Metrics */}
-            <Grid.Col span={4}>
-              <Card p="lg" withBorder radius="md" style={{ backgroundColor: 'white', height: '100%', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
-                <Stack gap="md">
-                  <Text size="sm" tt="uppercase" fw={700} c="indigo">Financial Metrics</Text>
-                  <Stack gap="sm">
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">P/E Ratio:</Text>
-                      <Text size="lg" fw={600}>{quote.pe !== null ? quote.pe.toFixed(2) : 'N/A'}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">EPS:</Text>
-                      <Text size="lg" fw={600}>{quote.eps !== null ? `$${quote.eps.toFixed(2)}` : 'N/A'}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Beta:</Text>
-                      <Text size="lg" fw={600}>{quote.beta !== null ? quote.beta.toFixed(2) : 'N/A'}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Shares Out:</Text>
-                      <Text size="lg" fw={600}>{quote.sharesOutstanding || 'N/A'}</Text>
-                    </Group>
-                  </Stack>
-                </Stack>
-              </Card>
-            </Grid.Col>
-
-            {/* Dividends & 52-Week Range */}
-            <Grid.Col span={4}>
-              <Card p="lg" withBorder radius="md" style={{ backgroundColor: 'white', height: '100%', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
-                <Stack gap="md">
-                  <Text size="sm" tt="uppercase" fw={700} c="green">Dividends & 52-Week</Text>
-                  <Stack gap="sm">
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Dividend:</Text>
-                      <Text size="lg" fw={600}>{quote.dividend !== null ? `$${quote.dividend.toFixed(2)}` : 'N/A'}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">Yield:</Text>
-                      <Text size="lg" fw={600}>{quote.yield !== null ? `${quote.yield.toFixed(2)}%` : 'N/A'}</Text>
-                    </Group>
-                    <Group justify="space-between">
-                      <Text size="sm" c="dimmed">52W Range:</Text>
-                      <div style={{ textAlign: 'right' }}>
-                        <Text size="md" fw={600}>
-                          {quote.week52Low > 0 && quote.week52High > 0 
-                            ? `${formatPrice(quote.week52Low)}` 
-                            : 'N/A'
-                          }
-                        </Text>
-                        <Text size="sm" c="dimmed">to</Text>
-                        <Text size="md" fw={600}>
-                          {quote.week52Low > 0 && quote.week52High > 0 
-                            ? `${formatPrice(quote.week52High)}` 
-                            : 'N/A'
-                          }
-                        </Text>
-                      </div>
-                    </Group>
-                  </Stack>
-                </Stack>
-              </Card>
-            </Grid.Col>
-          </Grid>
-
-          {/* Market Identification & Timestamp Details */}
-          <Paper p="md" mt="lg" style={{ backgroundColor: 'rgba(240,240,240,0.5)', borderRadius: '8px' }}>
-            <Grid>
-              <Grid.Col span={6}>
-                <Stack gap="xs">
-                  <Text size="sm" fw={600} c="dark">Exchange Details</Text>
-                  <Group gap="md">
-                    <Text size="sm" c="dimmed">Exchange: <strong>{quote.exchangeLong || quote.exchange}</strong></Text>
-                    <Text size="sm" c="dimmed">Last Market ID: <strong>{quote.lastMarketId}</strong></Text>
-                  </Group>
-                  <Group gap="md">
-                    <Text size="sm" c="dimmed">Bid Market: <strong>{quote.bidMarketId}</strong></Text>
-                    <Text size="sm" c="dimmed">Ask Market: <strong>{quote.askMarketId}</strong></Text>
-                  </Group>
-                </Stack>
-              </Grid.Col>
-              <Grid.Col span={6}>
-                <Stack gap="xs">
-                  <Text size="sm" fw={600} c="dark">Timing Information</Text>
-                  <Group gap="md">
-                    <Text size="sm" c="dimmed">Last Trade: <strong>{formatTime(quote.lastTradeTime)}</strong></Text>
-                  </Group>
-                  <Group gap="md">
-                    <Text size="sm" c="dimmed">Exchange Time: <strong>{formatTime(quote.exchangeTimestamp)}</strong></Text>
-                    <Text size="sm" c="dimmed">Quote Time: <strong>{formatTime(quote.quoteTimestamp)}</strong></Text>
-                  </Group>
-                </Stack>
-              </Grid.Col>
-            </Grid>
-          </Paper>
-
-          {/* Footer with Last Update */}
-          <Group justify="center" mt="xl">
-            <Paper p="md" style={{ backgroundColor: 'rgba(255,255,255,0.8)', borderRadius: '8px' }}>
-              <Text size="sm" c="dimmed" ta="center">
-                <strong>Last trade:</strong> {new Date(quote.lastUpdate).toLocaleString()} • 
-                <strong>Exchange:</strong> {quote.exchange}
-              </Text>
-            </Paper>
+      {/* Statistics Footer */}
+      <Paper p="md" withBorder radius="md" style={{ backgroundColor: '#f8f9fa' }}>
+        <Group justify="space-between">
+          <Text size="sm" c="dimmed">
+            📊 Showing {quotes.length} symbols • Real-time data from QuoteMedia
+          </Text>
+          <Group gap="md">
+            <Text size="sm" c="dimmed">
+              🕐 Auto-refresh: {countdown}s
+            </Text>
+            <Badge variant="light" color={quotes.length > 0 ? 'green' : 'gray'}>
+              {quotes.length > 0 ? 'Live Data' : 'No Data'}
+            </Badge>
           </Group>
-        </Paper>
-      ))}
+        </Group>
+      </Paper>
     </Stack>
   );
 }

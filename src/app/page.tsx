@@ -1,11 +1,13 @@
 'use client';
 
-import { Container, Title, Paper, Grid, Stack, Group, Badge, Tabs, ActionIcon } from '@mantine/core';
-import { IconTrendingUp, IconActivity, IconNews, IconAlertTriangle, IconList, IconChartLine } from '@tabler/icons-react';
+import { Container, Title, Paper, Grid, Stack, Group, Badge, Tabs, ActionIcon, Button } from '@mantine/core';
+import { IconTrendingUp, IconActivity, IconNews, IconAlertTriangle, IconList, IconChartLine, IconDatabase } from '@tabler/icons-react';
 import { SymbolInput } from '@/components/SymbolInput';
 import { HaltsTable } from '@/components/HaltsTable';
 import { SymbolList } from '@/components/SymbolList';
 import { SymbolAnalysis } from '@/components/SymbolAnalysis';
+import TMXDataExtractor from '@/components/TMXDataExtractor';
+import RealTimeQuotes from '@/components/RealTimeQuotes';
 import { useState, useEffect } from 'react';
 
 export default function HomePage() {
@@ -103,6 +105,14 @@ export default function HomePage() {
               🏠 Home ({symbols.length} symbols)
             </Tabs.Tab>
             
+            <Tabs.Tab 
+              value="tmx-realtime" 
+              leftSection={<IconDatabase size={16} />}
+              color="orange"
+            >
+              📊 TMX Real Time Data
+            </Tabs.Tab>
+            
             {/* Dynamic Symbol Tabs */}
             {symbolTabs.map(symbol => (
               <Tabs.Tab 
@@ -138,33 +148,50 @@ export default function HomePage() {
           </Tabs.List>
 
           <Tabs.Panel value="home" pt="md">
-            {/* Home Tab - Symbol Management + Halts Table */}
-            <Grid>
-              {/* Left Column - Symbol Management (1/3) */}
-              <Grid.Col span={{ base: 12, md: 4 }}>
-                <Stack gap="md">
-                  <Paper shadow="sm" p="md" radius="md" withBorder>
-                    <SymbolInput onSymbolAdded={handleSymbolAdded} />
-                  </Paper>
-                  
-                  <Paper shadow="sm" p="md" radius="md" withBorder>
-                    <SymbolList 
-                      symbols={symbols} 
-                      onClearAll={handleClearAll}
-                      onSymbolClick={handleSymbolClick}
-                      showDetails={true}
-                    />
-                  </Paper>
-                </Stack>
-              </Grid.Col>
+            <Stack gap="lg">
+              {/* TMX Data Integration Section */}
+              <TMXDataExtractor 
+                symbols={symbols.length > 0 ? symbols : ['AAPL', 'TSLA', 'GOOGL']}
+                autoRefresh={false}
+              />
+              
+              {/* Home Tab - Symbol Management + Halts Table */}
+              <Grid>
+                {/* Left Column - Symbol Management (1/3) */}
+                <Grid.Col span={{ base: 12, md: 4 }}>
+                  <Stack gap="md">
+                    <Paper shadow="sm" p="md" radius="md" withBorder>
+                      <SymbolInput onSymbolAdded={handleSymbolAdded} />
+                    </Paper>
+                    
+                    <Paper shadow="sm" p="md" radius="md" withBorder>
+                      <SymbolList 
+                        symbols={symbols} 
+                        onClearAll={handleClearAll}
+                        onSymbolClick={handleSymbolClick}
+                        showDetails={true}
+                      />
+                    </Paper>
+                  </Stack>
+                </Grid.Col>
 
-              {/* Right Column - Halts Table (2/3) */}
-              <Grid.Col span={{ base: 12, md: 8 }}>
-                <Paper shadow="sm" p="md" radius="md" withBorder>
-                  <HaltsTable onSymbolClick={handleSymbolClick} />
-                </Paper>
-              </Grid.Col>
-            </Grid>
+                {/* Right Column - Halts Table (2/3) */}
+                <Grid.Col span={{ base: 12, md: 8 }}>
+                  <Paper shadow="sm" p="md" radius="md" withBorder>
+                    <HaltsTable onSymbolClick={handleSymbolClick} />
+                  </Paper>
+                </Grid.Col>
+              </Grid>
+            </Stack>
+          </Tabs.Panel>
+
+          <Tabs.Panel value="tmx-realtime" pt="md">
+            <Stack gap="lg">
+              {/* Real-Time Market Data Table */}
+              <Paper shadow="sm" p="md" radius="md" withBorder>
+                <RealTimeQuotes />
+              </Paper>
+            </Stack>
           </Tabs.Panel>
 
           {/* Dynamic Symbol Analysis Tabs */}

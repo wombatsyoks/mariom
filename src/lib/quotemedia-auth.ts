@@ -24,7 +24,7 @@ export async function getQuoteMediaSid(): Promise<string> {
     console.log('🔐 Authenticating with QuoteMedia...');
     
     const authData: QuoteMediaAuthRequest = {
-      wmId: parseInt(process.env.QUOTEMEDIA_WEBMASTER_ID || '501'),
+      wmId: parseInt(process.env.QUOTEMEDIA_WEBMASTER_ID || '101020'), // Use webmaster ID from working example
       username: process.env.QUOTEMEDIA_USERNAME || '',
       password: process.env.QUOTEMEDIA_PASSWORD || ''
     };
