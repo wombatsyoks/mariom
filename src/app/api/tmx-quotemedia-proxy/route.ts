@@ -187,6 +187,7 @@ export async function GET(request: NextRequest) {
     console.log('🛤️ pathName mapped to:', pathName);
 
     // Build the correct URL using getMarketStats.json endpoint with working parameters
+    // Match the exact parameter order and names from working example
     const quoteMediaParams = new URLSearchParams({
       marketSession: marketSession,
       pathName: pathName,
@@ -196,7 +197,7 @@ export async function GET(request: NextRequest) {
       statCountry: statCountry,
       statTop: statTop,
       timezone: 'true',
-      webmasterId: process.env.QUOTEMEDIA_WEBMASTER_ID || '101020' // Use the webmaster ID from working example
+      webmasterId: '101020' // Always use 101020 as in working example
     });
 
     // Add premarket=true for PRE market sessions (critical from working example)

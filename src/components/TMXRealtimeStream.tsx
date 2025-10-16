@@ -203,9 +203,9 @@ export default function TMXRealtimeStream({
     }
   };
 
-  const formatPrice = (price: number) => (
-    <NumberFormatter value={price} thousandSeparator decimalScale={2} />
-  );
+  const formatPrice = (price: number) => {
+    return price.toFixed(2);
+  };
 
   const formatChange = (change: number, changePercent: number) => {
     const color = change >= 0 ? 'green' : 'red';
