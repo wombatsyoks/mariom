@@ -174,9 +174,23 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
         }
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+        if (!response.ok) {
+          if (response.status === 401) {
+            setError('Session expired or unauthorized. Please log in again.');
+            setLoading(false);
+            isFetchingRef.current = false;
+            loadingRef.current = false;
+            return;
+          }
+          if (response.status === 403) {
+            setError('Access denied or insufficient permissions for QuoteMedia API.');
+            setLoading(false);
+            isFetchingRef.current = false;
+            loadingRef.current = false;
+            return;
+          }
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
       const data = await response.json();
 
       if (data.success && Array.isArray(data.quotes)) {

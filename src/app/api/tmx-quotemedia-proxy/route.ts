@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getQuoteMediaSid, clearCachedSid } from '@/lib/quotemedia-auth';
+import { getQuoteMediaSid, clearCachedSid, generateDataToolToken } from '@/lib/quotemedia-auth';
 
 // QuoteMedia authentication - use environment variables
 const QUOTEMEDIA_CONFIG = {
   wmid: process.env.QUOTEMEDIA_WEBMASTER_ID || '101020', // Use webmaster ID from working example
-  dataToolToken: '6dade936c0001c39b1df9799115c10364be77d3ca331cbc36d7c2a2d619dd78c', // datatool-token from working example
   baseUrl: 'https://app.quotemedia.com',
   endpoint: '/datatool/getMarketStats.json'
 };
@@ -210,7 +209,21 @@ export async function GET(request: NextRequest) {
     console.log('🌐 Making request to QuoteMedia:', quoteMediaUrl);
 
     // First, let's try the actual QuoteMedia API and see what we get
-    console.log('� Attempting real QuoteMedia API call...');
+    console.log('🔑 Attempting real QuoteMedia API call...');
+
+    // Get a fresh datatool token
+    let dataToolToken: string;
+    try {
+      dataToolToken = await generateDataToolToken();
+      console.log('✅ Got fresh Datatool-Token:', dataToolToken.substring(0, 32) + '...');
+    } catch (error) {
+      console.error('❌ Failed to generate datatool token:', error);
+      return NextResponse.json({
+        success: false,
+        error: `Token generation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        errorType: 'TOKEN_FAILED'
+      }, { status: 401 });
+    }
 
     // Build QuoteMedia headers matching your working curl example exactly
     const headers: Record<string, string> = {
@@ -218,7 +231,7 @@ export async function GET(request: NextRequest) {
       'Accept-Encoding': 'gzip, deflate, br, zstd',
       'Accept-Language': 'en',
       'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-      'datatool-token': QUOTEMEDIA_CONFIG.dataToolToken,
+      'datatool-token': dataToolToken,
       'Origin': 'https://qrm.quotemedia.com',
       'Referer': 'https://qrm.quotemedia.com/',
       'Sec-Ch-Ua': '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',

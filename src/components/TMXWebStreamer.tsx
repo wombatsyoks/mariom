@@ -66,6 +66,7 @@ export function TMXWebStreamer({ sessionId }: TMXWebStreamerProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showRawData, setShowRawData] = useState(false);
+  const [dataToolToken, setDataToolToken] = useState<string | null>(null);
   
   // Market session controls
   const [marketSession, setMarketSession] = useState<string>('NORMAL');
@@ -74,6 +75,26 @@ export function TMXWebStreamer({ sessionId }: TMXWebStreamerProps) {
   
   const wsRef = useRef<WebSocket | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Function to fetch fresh datatool token
+  const fetchFreshToken = async (): Promise<string> => {
+    try {
+      const response = await fetch('/api/get-token');
+      if (!response.ok) {
+        throw new Error(`Token fetch failed: ${response.status}`);
+      }
+      const data = await response.json();
+      if (!data.success || !data.token) {
+        throw new Error('Invalid token response');
+      }
+      setDataToolToken(data.token);
+      console.log('✅ Fresh datatool token obtained for client');
+      return data.token;
+    } catch (error) {
+      console.error('❌ Failed to fetch fresh token:', error);
+      throw error;
+    }
+  };
 
   const accessTMXWebStream = async () => {
     setLoading(true);
@@ -124,7 +145,7 @@ export function TMXWebStreamer({ sessionId }: TMXWebStreamerProps) {
     }
   };
 
-  const startStreaming = () => {
+  const startStreaming = async () => {
     // Collect all available streaming sources
     const websocketUrls = [
       ...(tmxData?.websocket_urls || []),
@@ -144,6 +165,19 @@ export function TMXWebStreamer({ sessionId }: TMXWebStreamerProps) {
       return;
     }
 
+    // Fetch fresh token before starting streaming
+    let freshToken: string;
+    try {
+      freshToken = await fetchFreshToken();
+    } catch (error) {
+      notifications.show({
+        title: 'Token Error',
+        message: 'Failed to obtain fresh authentication token',
+        color: 'red',
+      });
+      return;
+    }
+
     setIsStreaming(true);
     
     notifications.show({
@@ -154,7 +188,7 @@ export function TMXWebStreamer({ sessionId }: TMXWebStreamerProps) {
     });
     
     // Start QuoteMedia streaming first (most reliable)
-    startQuoteMediaStream();
+    startQuoteMediaStream(freshToken);
     
     // Try TMX-style WebSocket connections using patterns from JavaScript analysis
     if (websocketUrls.length) {
@@ -177,7 +211,7 @@ export function TMXWebStreamer({ sessionId }: TMXWebStreamerProps) {
               headers: {
                 'X-Stream-Sid': sessionId,
                 'X-Stream-Wmid': '101020',
-                'X-Stream-DataTool-Token': '0df0ac71514c2ffeb9439af381a70e62e090c6c4a5aace74f989c0bfcc75c7a9',
+                'X-Stream-DataTool-Token': freshToken,
                 'authenticationMethod': 'datatool',
                 'conflation': 'LATEST',
                 'rejectExcessiveConnection': 'false'
@@ -273,7 +307,7 @@ export function TMXWebStreamer({ sessionId }: TMXWebStreamerProps) {
     }
   };
 
-  const startQuoteMediaStream = () => {
+  const startQuoteMediaStream = (token?: string) => {
     if (!sessionId) {
       notifications.show({
         title: 'Session Required',
@@ -442,7 +476,7 @@ export function TMXWebStreamer({ sessionId }: TMXWebStreamerProps) {
             headers: {
               'X-Stream-Sid': sessionId || '',
               'X-Stream-Wmid': '101020', // TMX PowerStream WMID
-              'X-Stream-DataTool-Token': '0df0ac71514c2ffeb9439af381a70e62e090c6c4a5aace74f989c0bfcc75c7a9',
+              'X-Stream-DataTool-Token': dataToolToken || '0df0ac71514c2ffeb9439af381a70e62e090c6c4a5aace74f989c0bfcc75c7a9',
               'Authorization': `Bearer ${sessionId || ''}`,
               'accept': 'application/json',
               'user-agent': 'TMX-PowerStream-Client/1.0'

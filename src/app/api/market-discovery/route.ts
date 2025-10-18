@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { generateDataToolToken } from '@/lib/quotemedia-auth';
 
 // Advanced market discovery API to test different endpoints and parameters
 export async function GET(request: NextRequest) {
@@ -18,6 +19,20 @@ export async function GET(request: NextRequest) {
 
   try {
     console.log(`🧪 Running ${testType} discovery tests`);
+
+    // Generate fresh datatool token
+    let dataToolToken: string;
+    try {
+      dataToolToken = await generateDataToolToken();
+      console.log('✅ Generated fresh Datatool-Token for market discovery');
+    } catch (error) {
+      console.error('❌ Failed to generate datatool token:', error);
+      return NextResponse.json({
+        success: false,
+        error: 'Token generation failed',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }, { status: 401 });
+    }
 
     const results = {
       testType,
@@ -143,7 +158,7 @@ export async function GET(request: NextRequest) {
           const response = await fetch(testUrl, {
             headers: {
               'accept': '*/*',
-              'datatool-token': '8c1a0cdbea19b8198ca3543e1f3b073d9d6c4f11881fb01c24c259807b273238',
+              'datatool-token': dataToolToken,
               'origin': 'https://api.quotemedia.com',
               'referer': 'https://api.quotemedia.com/',
               'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
@@ -209,7 +224,7 @@ export async function GET(request: NextRequest) {
           const response = await fetch(testUrl, {
             headers: {
               'accept': '*/*',
-              'datatool-token': '8c1a0cdbea19b8198ca3543e1f3b073d9d6c4f11881fb01c24c259807b273238',
+              'datatool-token': dataToolToken,
               'origin': 'https://api.quotemedia.com',
               'referer': 'https://api.quotemedia.com/',
               'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
@@ -285,7 +300,7 @@ export async function GET(request: NextRequest) {
           const response = await fetch(testUrl, {
             headers: {
               'accept': '*/*',
-              'datatool-token': '8c1a0cdbea19b8198ca3543e1f3b073d9d6c4f11881fb01c24c259807b273238',
+              'datatool-token': dataToolToken,
               'origin': 'https://api.quotemedia.com',
               'referer': 'https://api.quotemedia.com/',
               'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'

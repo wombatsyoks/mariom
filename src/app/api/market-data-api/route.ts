@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { generateDataToolToken } from '@/lib/quotemedia-auth';
 
 // Direct QuoteStream API access for real market data
 export async function GET(request: NextRequest) {
@@ -19,6 +20,20 @@ export async function GET(request: NextRequest) {
     const { wmid, tmxSessionId } = authData.authentication;
     
     console.log('🔑 Using authenticated session for API access...');
+    
+    // Generate fresh datatool token
+    let dataToolToken: string;
+    try {
+      dataToolToken = await generateDataToolToken();
+      console.log('✅ Generated fresh Datatool-Token for market data API');
+    } catch (error) {
+      console.error('❌ Failed to generate datatool token:', error);
+      return NextResponse.json({
+        success: false,
+        error: 'Token generation failed',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }, { status: 401 });
+    }
     
     // These are the actual API endpoints that QuoteStream Web likely uses
     const apiEndpoints = [
@@ -46,7 +61,7 @@ export async function GET(request: NextRequest) {
         body: new URLSearchParams({
           symbols: symbols,
           webmasterId: wmid,
-          'datatool-token': 'a67dda660ee3c4fe5d6c648ce5a5969d3b456c552494d1c79a410e1868c94359'
+          'datatool-token': dataToolToken
         })
       },
       
