@@ -137,13 +137,45 @@ export async function GET(request: NextRequest) {
     }
 
     // Extract parameters from the request with defaults matching the working example
-    const marketSession = searchParams.get('marketSession') || 'PRE'; // Use PRE as working example
-    const stat = searchParams.get('stat') || 'pg'; // percent gainers as in working example
+    const marketSession = searchParams.get('marketSession') || 'NORMAL';
+    const statParam = searchParams.get('stat') || 'pl';  // Frontend sends 'stat' not 'dataType'
+    const exchange = searchParams.get('exchange') || 'US';
     const statTop = searchParams.get('statTop') || '100';
     const statCountry = searchParams.get('statCountry') || 'US';
     const category = searchParams.get('category') || 'Market Movers';
     
-    console.log('🔍 Category received:', category);
+    // Map frontend exchange codes to QuoteMedia API statExchange codes
+    const statExchangeMap: Record<string, string> = {
+      'US': 'NSD',      // All US Markets -> Default to NASDAQ
+      'NSD': 'NSD',     // NASDAQ
+      'NYE': 'NYE',     // NYSE
+      'AMX': 'AMX',     // NYSE American
+      'OTO': 'OTO'      // OTC Markets
+    };
+
+    // The frontend now sends the actual stat codes (pl, pg, va, etc.)
+    // So we can use them directly, but keep mapping for backwards compatibility
+    const statMap: Record<string, string> = {
+      'pg': 'pg',       // Percent Gainers
+      'pl': 'pl',       // Percent Losers
+      'va': 'va',       // Volume Active (most active)
+      'dv': 'dv',       // Dollar Volume
+      'dg': 'dg',       // Dollar Gainers
+      'dl': 'dl'        // Dollar Losers
+    };
+    
+    // Get mapped values
+    const stat = statMap[statParam] || 'pl'; // Default to percent losers
+    const statExchange = statExchangeMap[exchange] || 'NSD'; // Default to NASDAQ
+    
+    console.log('🔍 Parameters received:', { 
+      marketSession, 
+      statParam, 
+      exchange, 
+      category,
+      mappedStat: stat,
+      mappedExchange: statExchange
+    });
     
     // Map category to qmodTool parameter
     const categoryToQmodTool: Record<string, string> = {
@@ -193,6 +225,7 @@ export async function GET(request: NextRequest) {
       qmodTool: qmodTool,
       sid: sessionId,
       stat: stat,
+      statExchange: statExchange,
       statCountry: statCountry,
       statTop: statTop,
       timezone: 'true',

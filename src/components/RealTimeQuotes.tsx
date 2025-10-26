@@ -74,8 +74,9 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
 
   // Filter states
   const [marketSession, setMarketSession] = useState('NORMAL');
-  const [statType, setStatType] = useState('dv');
-  const [exchange, setExchange] = useState('US');
+  const [statType, setStatType] = useState('pl'); // Default to Percent Losers
+  const [exchange, setExchange] = useState('US'); // Main exchanges combined
+  const [otcExchange, setOtcExchange] = useState(''); // Separate OTC filter
   const [statTop, setStatTop] = useState('100');
   const [marketCategory, setMarketCategory] = useState('Market Movers');
 
@@ -92,32 +93,33 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
 
   // Filter options based on QuoteMedia interface
   const marketSessionOptions = [
-    { value: 'NORMAL', label: 'Normal Hours' },
+    { value: 'NORMAL', label: 'Market Hours' }, // Changed from Normal Hours
     { value: 'PRE', label: 'Pre-Market' },
     { value: 'POST', label: 'Post-Market' }
   ];
 
   const statTypeOptions = [
-    { value: 'va', label: 'Dollar Value (va)' },
-    { value: 'dv', label: 'Dollar Volume (dv)' },
-    { value: 'dg', label: 'Dollar Gainers (dg)' },
-    { value: 'dl', label: 'Dollar Losers (dl)' },
-    { value: 'pg', label: 'Percent Gainers (pg)' },
-    { value: 'pl', label: 'Percent Losers (pl)' },
-    { value: 'ah', label: 'After Hours Gainers (ah)' },
-    { value: 'al', label: 'After Hours Losers (al)' }
+    { value: 'va', label: 'Most Active' },
+    { value: 'dv', label: 'Dollar Volume' },
+    { value: 'dg', label: 'Dollar Gainers' },
+    { value: 'dl', label: 'Dollar Losers' },
+    { value: 'pg', label: 'Percent Gainers' },
+    { value: 'pl', label: 'Percent Losers' }
+    // Removed after hours options as requested
   ];
 
+  // Main exchanges (Nasdaq, NYSE, NYSE American combined)
   const exchangeOptions = [
-    { value: 'US', label: 'US Markets' },
-    { value: 'NSD', label: 'NASDAQ' },
+    { value: 'US', label: 'All US Markets' },
+    { value: 'NSD', label: 'Nasdaq' },
     { value: 'NYE', label: 'NYSE' },
-    { value: 'AMX', label: 'AMEX' },
-    { value: 'OTO', label: 'OTC' },
-    { value: 'TSX', label: 'TSX' },
-    { value: 'TSXV', label: 'TSX Venture' },
-    { value: 'CNQ', label: 'Canadian NSX' },
-    { value: 'LSE', label: 'London Stock Exchange' }
+    { value: 'AMX', label: 'NYSE American' }
+  ];
+
+  // Separate OTC options
+  const otcExchangeOptions = [
+    { value: '', label: 'None Selected' },
+    { value: 'OTO', label: 'OTC Markets' }
   ];
 
   const statTopOptions = [
@@ -165,7 +167,10 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
     abortControllerRef.current = new AbortController();
 
     try {
-      const url = `/api/tmx-quotemedia-proxy?marketSession=${marketSession}&stat=${statType}&statTop=${statTop}&exchange=${exchange}&category=${encodeURIComponent(marketCategory)}`;
+      // Determine which exchange to use - OTC takes priority if selected
+      const finalExchange = otcExchange || exchange;
+      
+      const url = `/api/tmx-quotemedia-proxy?marketSession=${marketSession}&stat=${statType}&statTop=${statTop}&exchange=${finalExchange}&category=${encodeURIComponent(marketCategory)}`;
       const response = await fetch(url, {
         signal: abortControllerRef.current.signal,
         headers: {
@@ -249,7 +254,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
       abortControllerRef.current = null;
     }
   // NOTE: loading intentionally omitted from deps to avoid re-creating callback on each setLoading
-  }, [isVisible, isPaused, marketSession, statType, statTop, exchange, marketCategory]);
+  }, [isVisible, isPaused, marketSession, statType, statTop, exchange, otcExchange, marketCategory]);
 
   // Visibility API to pause updates when tab is not visible
   useEffect(() => {
@@ -335,7 +340,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
         debounceTimeoutRef.current = null;
       }
     };
-  }, [marketSession, statType, exchange, statTop, marketCategory, isVisible, isPaused, fetchQuotes]);
+  }, [marketSession, statType, exchange, otcExchange, statTop, marketCategory, isVisible, isPaused, fetchQuotes]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -573,20 +578,38 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
                 label="Data Type"
                 placeholder="Select data type"
                 value={statType}
-                onChange={(value) => setStatType(value || 'dv')}
+                onChange={(value) => setStatType(value || 'pl')}
                 data={statTypeOptions}
                 size="sm"
                 style={{ minWidth: 180 }}
               />
               
               <Select
-                label="Exchange"
+                label="Main Exchanges"
                 placeholder="Select exchange"
                 value={exchange}
-                onChange={(value) => setExchange(value || 'US')}
+                onChange={(value) => {
+                  setExchange(value || 'US');
+                  // Clear OTC when main exchange is selected
+                  if (value) setOtcExchange('');
+                }}
                 data={exchangeOptions}
                 size="sm"
                 style={{ minWidth: 160 }}
+              />
+              
+              <Select
+                label="OTC Markets"
+                placeholder="Select OTC"
+                value={otcExchange}
+                onChange={(value) => {
+                  setOtcExchange(value || '');
+                  // Clear main exchange when OTC is selected (except for 'None')
+                  if (value && value !== '') setExchange('');
+                }}
+                data={otcExchangeOptions}
+                size="sm"
+                style={{ minWidth: 140 }}
               />
               
               <Select

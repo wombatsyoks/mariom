@@ -49,17 +49,14 @@ async function fetchNasdaqHalts(): Promise<HaltData[]> {
   
   const headers = {
     "accept": "*/*",
-    "accept-language": "en-GB,en-US;q=0.9,en;q=0.8,nl;q=0.7",
+    "accept-language": "en-US,en;q=0.9",
     "content-type": "application/json",
-    "priority": "u=1, i",
-    "sec-ch-ua": '"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Linux"',
+    "origin": "https://www.nasdaqtrader.com",
+    "referer": "https://www.nasdaqtrader.com/trader.aspx?id=tradehalts",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     "sec-fetch-dest": "empty",
     "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-    "Referer": "https://www.nasdaqtrader.com/trader.aspx?id=tradehalts",
-    "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+    "sec-fetch-site": "same-origin"
   };
 
   const payload = JSON.stringify({
@@ -82,8 +79,8 @@ async function fetchNasdaqHalts(): Promise<HaltData[]> {
       
       controller = new AbortController();
       
-      // Increased timeout for better reliability
-      const timeoutMs = 15000; // 15 second timeout
+      // Reduced timeout to fail faster
+      const timeoutMs = 8000; // 8 second timeout
       timeoutId = setTimeout(() => {
         console.log(`⏰ Request timeout after ${timeoutMs}ms on attempt ${attempt}`);
         controller?.abort();
@@ -155,18 +152,20 @@ async function fetchNasdaqHalts(): Promise<HaltData[]> {
       console.log(`❌ Attempt ${attempt} failed (${errorType}):`, error instanceof Error ? error.message : error);
       
       if (attempt < maxRetries) {
-        // Exponential backoff with jitter: 2s, 4s, 6s + random 0-1s
-        const baseDelay = attempt * 2000; 
-        const jitter = Math.random() * 1000;
-        const delay = baseDelay + jitter;
-        console.log(`⏳ Waiting ${Math.round(delay)}ms before retry...`);
+        // Shorter delays for faster fallback: 1s, 2s
+        const delay = attempt * 1000;
+        console.log(`⏳ Waiting ${delay}ms before retry...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
   }
 
-  // If all retries failed, throw the last error
-  throw new Error(`Failed to fetch NASDAQ halts after ${maxRetries} attempts: ${lastError?.message}`);
+  // If all retries failed, return empty array with warning instead of throwing
+  console.warn(`⚠️ All attempts to fetch NASDAQ halts failed. Returning empty halts list.`);
+  console.warn(`Last error: ${lastError?.message}`);
+  
+  // Return empty array instead of throwing - this prevents the entire API from failing
+  return [];
 }
 
 function parseNasdaqTable(html: string): HaltData[] {
