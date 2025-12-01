@@ -25,7 +25,7 @@ interface Quote {
   sharesOutstanding: string;
   exchange: string;
   lastUpdate: string;
-  
+
   // Extended QuoteMedia pricedata fields
   bid: number;
   ask: number;
@@ -52,7 +52,7 @@ interface Quote {
   quoteTimestamp: string;
   exchangeLong: string;
   dollarVolume: number;
-  
+
   // Market identification codes
   lastMarketId: string;
   bidMarketId: string;
@@ -160,7 +160,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
 
     // Abort previous request if still pending
     if (abortControllerRef.current) {
-      try { abortControllerRef.current.abort(); } catch {}
+      try { abortControllerRef.current.abort(); } catch { }
     }
 
     // Create new abort controller for this request
@@ -169,7 +169,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
     try {
       // Determine which exchange to use - OTC takes priority if selected
       const finalExchange = otcExchange || exchange;
-      
+
       const url = `/api/tmx-quotemedia-proxy?marketSession=${marketSession}&stat=${statType}&statTop=${statTop}&exchange=${finalExchange}&category=${encodeURIComponent(marketCategory)}`;
       const response = await fetch(url, {
         signal: abortControllerRef.current.signal,
@@ -179,23 +179,23 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
         }
       });
 
-        if (!response.ok) {
-          if (response.status === 401) {
-            setError('Session expired or unauthorized. Please log in again.');
-            setLoading(false);
-            isFetchingRef.current = false;
-            loadingRef.current = false;
-            return;
-          }
-          if (response.status === 403) {
-            setError('Access denied or insufficient permissions for QuoteMedia API.');
-            setLoading(false);
-            isFetchingRef.current = false;
-            loadingRef.current = false;
-            return;
-          }
-          throw new Error(`HTTP error! status: ${response.status}`);
+      if (!response.ok) {
+        if (response.status === 401) {
+          setError('Session expired or unauthorized. Please log in again.');
+          setLoading(false);
+          isFetchingRef.current = false;
+          loadingRef.current = false;
+          return;
         }
+        if (response.status === 403) {
+          setError('Access denied or insufficient permissions for QuoteMedia API.');
+          setLoading(false);
+          isFetchingRef.current = false;
+          loadingRef.current = false;
+          return;
+        }
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
       const data = await response.json();
 
       if (data.success && Array.isArray(data.quotes)) {
@@ -253,7 +253,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
       if (isMountedRef.current) setLoading(false);
       abortControllerRef.current = null;
     }
-  // NOTE: loading intentionally omitted from deps to avoid re-creating callback on each setLoading
+    // NOTE: loading intentionally omitted from deps to avoid re-creating callback on each setLoading
   }, [isVisible, isPaused, marketSession, statType, statTop, exchange, otcExchange, marketCategory]);
 
   // Visibility API to pause updates when tab is not visible
@@ -263,11 +263,34 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    
+
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
+
+  // Clear table when filters change for better visual feedback
+  useEffect(() => {
+    // Clear existing quotes to show change is happening
+    setQuotes([]);
+    setLoading(true);
+
+    // Small debounce to avoid too many rapid requests
+    if (debounceTimeoutRef.current) {
+      clearTimeout(debounceTimeoutRef.current);
+    }
+
+    debounceTimeoutRef.current = window.setTimeout(() => {
+      // Fetch new data after filter change
+      fetchQuotes();
+    }, 300); // 300ms debounce
+
+    return () => {
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+      }
+    };
+  }, [marketSession, statType, exchange, otcExchange, statTop, marketCategory, fetchQuotes]);
 
   // Auto-refresh effect with memory management. Use a slightly longer interval
   // and ensure only one interval exists. fetchQuotes is stable (no loading in deps).
@@ -281,7 +304,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
     // Initial fetch
     fetchQuotes();
 
-    const REFRESH_MS = 15000; // 15s - reduce frequency to ease memory/CPU
+    const REFRESH_MS = 15000; // 15s - user requested interval
     if (isVisible && !isPaused) {
       refreshIntervalRef.current = setInterval(() => {
         fetchQuotes();
@@ -351,7 +374,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
-      
+
       // Clear all intervals
       if (refreshIntervalRef.current) {
         clearInterval(refreshIntervalRef.current);
@@ -359,7 +382,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
       if (countdownIntervalRef.current) {
         clearInterval(countdownIntervalRef.current);
       }
-      
+
       // Clear state to free memory
       setQuotes([]);
       setError(null);
@@ -480,7 +503,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
   return (
     <Stack gap="lg">
       {/* Enhanced Header */}
-      <Paper p="xl" withBorder style={{ 
+      <Paper p="xl" withBorder style={{
         background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
         color: 'white',
         borderRadius: '12px'
@@ -497,7 +520,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
               </Text>
             </div>
           </Group>
-          
+
           <Group gap="md">
             <Tooltip label={isPaused ? 'Resume updates' : 'Pause updates'}>
               <ActionIcon
@@ -511,10 +534,10 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
               </ActionIcon>
             </Tooltip>
             <Tooltip label={`Next refresh in ${countdown}s`}>
-              <Group gap="xs" style={{ 
-                backgroundColor: isPaused ? 'rgba(255,165,0,0.2)' : 'rgba(255,255,255,0.2)', 
-                padding: '12px 16px', 
-                borderRadius: '10px' 
+              <Group gap="xs" style={{
+                backgroundColor: isPaused ? 'rgba(255,165,0,0.2)' : 'rgba(255,255,255,0.2)',
+                padding: '12px 16px',
+                borderRadius: '10px'
               }}>
                 <IconClock size={18} />
                 <Text size="md" fw={600}>{isPaused ? 'PAUSED' : `${countdown}s`}</Text>
@@ -536,7 +559,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
 
         {lastUpdate && (
           <Text size="sm" style={{ opacity: 0.8, marginTop: '12px' }}>
-            Last updated: {new Date(lastUpdate).toLocaleString()} • Showing {quotes.length} symbols 
+            Last updated: {new Date(lastUpdate).toLocaleString()} • Showing {quotes.length} symbols
             {isPaused && ' • UPDATES PAUSED'}
             {!isVisible && ' • TAB INACTIVE'}
           </Text>
@@ -563,7 +586,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
                 size="sm"
                 style={{ minWidth: 160 }}
               />
-              
+
               <Select
                 label="Market Session"
                 placeholder="Select session"
@@ -573,7 +596,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
                 size="sm"
                 style={{ minWidth: 150 }}
               />
-              
+
               <Select
                 label="Data Type"
                 placeholder="Select data type"
@@ -583,7 +606,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
                 size="sm"
                 style={{ minWidth: 180 }}
               />
-              
+
               <Select
                 label="Main Exchanges"
                 placeholder="Select exchange"
@@ -597,7 +620,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
                 size="sm"
                 style={{ minWidth: 160 }}
               />
-              
+
               <Select
                 label="OTC Markets"
                 placeholder="Select OTC"
@@ -611,7 +634,7 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
                 size="sm"
                 style={{ minWidth: 140 }}
               />
-              
+
               <Select
                 label="Number of Results"
                 placeholder="Select count"
@@ -656,8 +679,8 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
             </Table.Thead>
             <Table.Tbody>
               {quotes.map((quote, index) => (
-                <Table.Tr 
-                  key={`${quote.symbol}-${index}`} 
+                <Table.Tr
+                  key={`${quote.symbol}-${index}`}
                   style={{
                     backgroundColor: index % 2 === 0 ? '#ffffff' : '#f8f9fa',
                     transition: 'all 0.3s ease'
@@ -666,8 +689,8 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
                   <Table.Td style={{ fontWeight: 700, fontSize: '14px' }}>
                     <Group gap="xs">
                       <Text fw={700} c="dark">{quote.symbol}</Text>
-                      {quote.change >= 0 ? 
-                        <IconTrendingUp size={16} color="green" /> : 
+                      {quote.change >= 0 ?
+                        <IconTrendingUp size={16} color="green" /> :
                         <IconTrendingDown size={16} color="red" />
                       }
                     </Group>
@@ -727,9 +750,9 @@ export default function RealTimeQuotes({ symbol = 'AAPL' }: RealTimeQuotesProps)
                     <Text size="sm">{formatVolume(quote.vwapvolume || 0)}</Text>
                   </Table.Td>
                   <Table.Td style={{ textAlign: 'right' }}>
-                    <Badge 
-                      variant="light" 
-                      color={quote.tick > 0 ? 'green' : quote.tick < 0 ? 'red' : 'gray'} 
+                    <Badge
+                      variant="light"
+                      color={quote.tick > 0 ? 'green' : quote.tick < 0 ? 'red' : 'gray'}
                       size="sm"
                     >
                       {quote.tick > 0 ? '+' : quote.tick < 0 ? '-' : '0'}
